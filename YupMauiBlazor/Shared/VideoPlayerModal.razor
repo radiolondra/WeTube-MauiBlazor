@@ -1,0 +1,53 @@
+﻿<Row>
+   <Column  Class="mx-auto" ColumnSize="ColumnSize.IsFull">
+        <ModalHeader>
+            <ModalTitle Style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width:100%" >        
+                @VideoTitle
+            </ModalTitle>
+            <CloseButton/>
+        </ModalHeader>
+
+        <ModalBody>
+            
+            <Video Class="d-flex mx-auto"
+                   AutomaticallyHideControls="true"
+                   ResetOnEnd="true"           
+                   Poster="@ImageJpgDataUrl"
+                   Source="@(@EphemeralVideoUrl)"> 
+            </Video>
+            
+        </ModalBody>
+
+    </Column>
+</Row>
+   
+
+@code {
+    [Inject] public IModalService ModalService { get; set; }
+    [Parameter] public string VideoTitle { get; set; }
+    [Parameter] public string ImageJpgDataUrl { get; set; }
+    [Parameter] public string EphemeralVideoUrl { get; set; }
+    
+
+   // [Parameter] public Func<ModalClosingEventArgs, Task> OnCloseRequest { get; set; }
+
+    //private bool cancelClose;
+
+    /*
+    private Task OnModalClosing(ModalClosingEventArgs e)
+    {
+        // just set Cancel to prevent modal from closing
+        e.Cancel = cancelClose
+            || e.CloseReason != CloseReason.UserClosing;
+
+        return Task.CompletedTask;
+    }
+
+    private async Task CloseModal()
+    {
+        cancelClose = false;
+
+        await ModalService.Hide();
+    }
+    */
+}

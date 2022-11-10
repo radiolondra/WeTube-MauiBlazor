@@ -1,0 +1,408 @@
+﻿@using System.Collections.Concurrent
+@using System.Collections.Generic
+@using System.Collections.ObjectModel
+@using System.Threading
+@using System.Text
+@using System.Globalization
+@using System.Diagnostics;
+@using YupMauiBlazor.YTExploder.Videos.Streams
+@using System.Drawing
+
+@inject BlazorSpinner.SpinnerService _spinnerService
+
+@* @inject IJSRuntime JS *@
+
+
+<EditForm Model="@videoItem" OnSubmit="StartSearch">
+    <Fields Padding="Padding.Is3">
+        <Field Horizontal>
+            <FieldBody ColumnSize="ColumnSize.IsFull.OnTablet.Is10.OnDesktop">
+                <Addons>
+                    <Addon AddonType="AddonType.Body">
+                        <TextEdit Placeholder="Type what you want to search for" @bind-Text="@SearchText"/>
+                    </Addon>
+                    <Addon AddonType="AddonType.End">
+                        <Button Margin="Margin.Is2.FromStart" Color="Blazorise.Color.Primary" Type="ButtonType.Submit">Search</Button>
+                    </Addon>
+                </Addons>
+            </FieldBody>
+        </Field>        
+    </Fields>
+</EditForm>
+
+<!-- <Loading IsLoading="IsBusy" LoadingText="Loading...Please wait."/> -->
+    
+<InfiniteScroll ObserverTargetId="observerTarget" ObservableTargetReached="(e) => AddItems()">
+    
+    <!-- <Virtualize Items="@_searchResults"> -->
+        
+    @foreach (var item in _searchResults)
+    {    
+    <Row>            
+            <Column  Class="mx-auto" ColumnSize="ColumnSize.Is10.OnTablet.Is6.OnWidescreen.Is12.OnMobile">                
+                <Card Margin="Margin.Is4.OnY">                    
+                    <CardImage Source="@item.ImageJpgDataUrl" Class="d-flex rounded-lg mx-auto"></CardImage>
+
+                    <!--
+                    <div Style="visibility:hidden; height:0px; max-width:100%; max-height:100%;" class="d-flex rounded-lg mx-auto">
+                    <CardImage Style="display:none;" Class="d-flex rounded-lg mx-auto" Source="@context.ImageJpgDataUrl"/>
+                    </div>
+                    -->
+                    <!--
+                    <Video 
+                        Class="d-flex rounded-lg mx-auto"                    
+                        AutomaticallyHideControls="true"                        
+                        ResetOnEnd="true"                                                 
+                        Played="() => GetManifestInfo(context, _cancellationTokenSource.Token)"                        
+                        Poster="@context.ImageJpgDataUrl" 
+                        Source="@(@context.EphemeralUrl)"
+                        />                   
+                     -->   
+                   
+                    <CardBody>
+                            <CardTitle Size="5">@item.Title</CardTitle>
+                        <CardText>@item.TitleUrl</CardText>
+                        <CardText Style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width:100%">@item.EphemeralVideoUrl</CardText>
+                    </CardBody>
+
+                    <CardActions Padding="Padding.Is3">
+                        <!--
+                        <Button Color="Blazorise.Color.Primary" Clicked="() => GetManifestInfo(context, _cancellationTokenSource.Token)">
+                        -->
+                        <Tooltip Text="Play video" Placement="TooltipPlacement.Top">
+                            <Button Clicked="() => ShowModal(item)">
+                                <Icon Name="IconName.Play" />
+                            </Button> 
+                        </Tooltip>                        
+                    </CardActions>
+                </Card>
+                
+            </Column>
+        </Row>
+    }
+    <!-- </Virtualize> -->
+    
+    <ul id="observerTarget" />
+</InfiniteScroll>
+  
+
+
+@code {
+
+    private VideoItem videoItem = new VideoItem();
+    private ObservableCollection<VideoItem> _searchResults = new ObservableCollection<VideoItem>();
+    private ConcurrentQueue<VideoItem> SearchQueue = new ConcurrentQueue<VideoItem>();
+
+    private CancellationTokenSource _cancellationTokenSource = new CancellationTokenSource();
+
+    private CancellationTokenSource consumer_cancellationToken = new CancellationTokenSource();
+
+    private string[] Controls = new string[4] {
+        VideoControlsType.Play,
+        VideoControlsType.Volume,
+        VideoControlsType.Fullscreen,
+        VideoControlsType.Progress
+    };
+
+    private bool IsBusy = false;
+    private bool IsConsumerThreadRunning = false;
+    private int SearchVideoIndexer = 0;
+    private bool getEnumerator = false;
+    private bool ImageVisible = false;
+    private string SearchText = string.Empty;
+
+    private bool cancelClose;
+
+    [Inject] public IModalService ModalService { get; set; }
+
+
+    public async Task ShowModal(VideoItem item)
+    {
+        
+        await GetEphemeralUrl(item);
+        
+        await ModalService.Show<VideoPlayerModal>(
+           parameters => {
+               parameters.Add(x => x.VideoTitle, item.Title);
+               parameters.Add(x => x.ImageJpgDataUrl, item.ImageJpgDataUrl);
+               parameters.Add(x => x.EphemeralVideoUrl, item.EphemeralVideoUrl);               
+               
+               //parameters.Add(x => x.OnCloseRequest, IsClosing);
+           },
+           new ModalInstanceOptions() {
+               Size = ModalSize.Large,
+               Centered = true,
+               Closing = IsClosing,
+               UseModalStructure = false 
+           }
+        );
+    }
+
+    public Task IsClosing(ModalClosingEventArgs e)
+    {
+        e.Cancel = cancelClose
+            || e.CloseReason != CloseReason.UserClosing;
+
+        return Task.CompletedTask;
+    }
+
+    private void StartConsumerThread()
+    {
+        Console.WriteLine("Starting Consumer thread");
+        SearchQueueConsumer(consumer_cancellationToken.Token);
+        IsConsumerThreadRunning = true;
+    }
+    private void StopConsumerThread()
+    {
+        Console.WriteLine("Stopping Consumer thread");
+        consumer_cancellationToken.Cancel();
+        IsConsumerThreadRunning = false;
+    }
+
+    private void StartSearch()
+    {
+        Console.WriteLine("Starting search");
+
+        _cancellationTokenSource.Cancel();
+
+        if (!IsConsumerThreadRunning)
+        {
+            StartConsumerThread();
+        }
+
+        DoSearch();
+
+    }
+
+    /// <summary>
+    /// Do the search on Youtube
+    /// </summary>
+    public void DoSearch()
+    {
+
+        IsBusy = true;
+
+        SearchVideoIndexer = 0;        
+
+        _cancellationTokenSource = new CancellationTokenSource();        
+
+        SearchQueue.Clear();
+
+
+        _searchResults.Clear();
+        StateHasChanged();
+
+        if (!string.IsNullOrWhiteSpace(SearchText))
+        {            
+
+            ImageVisible = false;
+
+            getEnumerator = true;
+
+            AddItems();
+
+        }
+    }
+
+    public async void AddItems()
+    {
+        if (!String.IsNullOrWhiteSpace(SearchText))
+        {
+            try
+            {
+                IsBusy = true;
+                _spinnerService.Show();
+
+                await foreach (var item in VideoItem.SearchAsync(getEnumerator, SearchText, _cancellationTokenSource.Token))
+                {
+                    getEnumerator = false;
+                    if (_cancellationTokenSource.Token.IsCancellationRequested)
+                    {
+                        _cancellationTokenSource.Token.ThrowIfCancellationRequested();
+                        break;
+                    }
+
+                    QueueSearch(item);
+
+                    // Avalonia crash: eglMakeCurrent failed with error EGL_CONTEXT_LOST
+                    // https://github.com/zkSNACKs/WalletWasabi/issues/4725
+                    // To solve the issue add this delay
+                    //await Task.Delay(100);
+                }
+
+                IsBusy = false;
+                _spinnerService.Hide();
+
+            }
+            catch (OperationCanceledException ex)
+            {
+                IsBusy = false;
+                _spinnerService.Hide();
+
+            }
+        }
+    }
+
+    public void QueueSearch(VideoItem video)
+    {
+        SearchQueue.Enqueue(video);
+    }
+
+    private async Task SearchQueueConsumer(CancellationToken consumerThreadToken)
+    {        
+
+        while (true)
+        {
+            if (consumerThreadToken.IsCancellationRequested)
+            {
+                // terminate the consumer thread (app is exiting)
+                break;
+            }
+
+            try
+            {
+                if (_cancellationTokenSource != null)
+                {
+                    if (_cancellationTokenSource.Token.IsCancellationRequested)
+                    {
+                        _cancellationTokenSource.Token.ThrowIfCancellationRequested();
+                    }
+                    else
+                    {
+                        if (SearchQueue.Count > 0)
+                        {
+                            bool success = SearchQueue.TryDequeue(out videoItem);
+                            if (success && videoItem != null)
+                            {
+
+                                videoItem.VideoIndex = SearchVideoIndexer++;
+
+                                videoItem.Title = String.Concat(videoItem.Title
+                                    .Normalize(NormalizationForm.FormD)
+                                    .Where(c => CharUnicodeInfo.GetUnicodeCategory(c) != UnicodeCategory.NonSpacingMark));
+
+                                videoItem.DurationUI = videoItem.Duration == null ? string.Empty : $"Duration: {videoItem.Duration}";
+
+                                videoItem.EphemeralPlayIcon = IconName.Play;
+                                //videoItem.EphemeralPlayIconColor = MudBlazor.Color.Error;
+                                videoItem.ImageJpgDataUrl = Settings.YupImageNotAvailable;                                
+
+                                _searchResults.Add(videoItem);
+
+                                StateHasChanged();                                
+
+                                LoadCover(videoItem, _cancellationTokenSource.Token);
+                                //GetManifestInfo(videoItem, _cancellationTokenSource.Token);
+
+                            }
+                        }
+                    }
+                }
+            }
+            catch (OperationCanceledException ex)
+            {
+
+            }
+
+            await Task.Delay(100);
+        }        
+    }
+
+    private async Task GetEphemeralUrl(VideoItem item)
+    {
+        if (item.EphemeralVideoUrl == string.Empty)
+        {
+            _spinnerService.Show();
+
+            var youtube = new YoutubeClient();
+
+            var streamManifest = await youtube.Videos.Streams.GetManifestAsync(item.TitleUrl);
+
+            item.EphemeralVideoUrl = streamManifest.GetMuxedStreams().GetWithHighestVideoQuality().Url;           
+
+            _spinnerService.Hide();
+
+            StateHasChanged();
+        }
+    }
+
+    private async Task GetManifestInfo(VideoItem item, CancellationToken token)
+    {
+        if (item.EphemeralVideoUrl == string.Empty)
+        {
+            if (!token.IsCancellationRequested)
+            {
+                var youtube = new YoutubeClient();
+
+                var streamManifest = await youtube.Videos.Streams.GetManifestAsync(item.TitleUrl, token);
+
+                item.EphemeralVideoUrl = streamManifest.GetMuxedStreams().GetWithHighestVideoQuality().Url;
+                //item.OnOffLine = item.EphemeralVideoUrl == string.Empty || item.EphemeralVideoUrl == null ? "Off-Line" : "On-Line";
+                //item.EphemeralPlayIcon = item.EphemeralVideoUrl == string.Empty || item.EphemeralVideoUrl == null ? Icons.Filled.PlayDisabled : Icons.Filled.PlayArrow;
+                //item.EphemeralPlayIconColor = item.EphemeralVideoUrl == string.Empty || item.EphemeralVideoUrl == null ? MudBlazor.Color.Error : MudBlazor.Color.Success;            
+
+                
+                StateHasChanged();
+                //await item.VideoRef.Play();                
+                
+            }
+
+
+
+        }
+
+    }
+
+    private async Task StopVideo(VideoItem item)
+    {
+        //await item.VideoRef.Stop();
+        StateHasChanged();
+    }
+
+    private async Task<Stream> LoadCoverBitmapAsync(VideoItem item, CancellationToken token)
+    {                 
+
+        byte[] data = null;
+
+        if (!token.IsCancellationRequested)
+        {
+            HttpClient httpClient = new();
+            try
+            {
+                data = await httpClient.GetByteArrayAsync(item.CoverUrl, token);
+            }
+            catch (Exception ex)
+            {
+                data = Utilities.ImageToByteArray(Settings.YupImageNotAvailable);
+            }
+        }
+        return new MemoryStream(data);
+
+    }
+
+    private async Task<byte[]> GetImageStreamAsync(VideoItem item)
+    {
+        HttpClient httpClient = new();
+        //return await httpClient.GetStreamAsync(item.CoverUrl);
+        return await httpClient.GetByteArrayAsync(item.CoverUrl);
+    }
+
+
+    private async Task LoadCover(VideoItem item, CancellationToken token)
+    {
+        //var imageStream = await LoadCoverBitmapAsync(item, token);
+        if (!token.IsCancellationRequested)
+        {
+            var imageBytes = await GetImageStreamAsync(item);
+            var imageSrc = Convert.ToBase64String(imageBytes);
+            item.ImageJpgDataUrl = string.Format("data:image/jpeg;base64,{0}", imageSrc);
+
+
+            //var dotnetImageStream = new DotNetStreamReference(imageStream);
+            //await JS.InvokeVoidAsync("setImage", "cover", dotnetImageStream);                        
+
+            
+            StateHasChanged();
+        }
+    }
+}

@@ -1,0 +1,70 @@
+﻿@inherits LayoutComponentBase
+
+<Layout>
+    <LayoutHeader>
+        @*Header bar*@
+        <Bar Class="navbar-expand"
+             Background="Background.Primary"
+             ThemeContrast="ThemeContrast.Dark">
+
+            <BarToggler Display="Display.InlineFlex" Border="Border.Is0" Clicked="ToggleSidebar" />
+
+            <BarBrand Display="Display.InlineFlex">
+                <BarItem>
+                    <Image Source="./Assets/wetubecc_small.png"/>
+                </BarItem>
+                <BarItem>
+                    <BarLabel Padding="Padding.Is3">WeTube</BarLabel>
+                </BarItem>
+                
+            </BarBrand>            
+        </Bar>
+        
+    </LayoutHeader>
+    
+    
+    
+
+    <Layout Sider>
+        <LayoutSider>
+            <LayoutSiderContent>
+                @*Sider bar*@
+                <Bar Mode="BarMode.VerticalInline"
+                     Breakpoint="Breakpoint.Desktop"
+                     Background="Background.Primary"
+                     ThemeContrast="ThemeContrast.Dark"
+                     @bind-Visible="_sidebarVisible">
+
+                    <NavMenu/>
+
+                </Bar>
+            </LayoutSiderContent>
+        </LayoutSider>
+        <Layout>
+            <LayoutContent Padding="Padding.Is4.OnX">
+                
+                @Body
+                
+            </LayoutContent>
+        </Layout>
+
+        
+    </Layout>  
+    <LayoutFooter Fixed>
+        <FooterMenu></FooterMenu>
+    </LayoutFooter>
+</Layout>
+
+
+
+
+@code {
+    private bool _sidebarVisible;
+
+    private void ToggleSidebar()
+    {
+        _sidebarVisible = !_sidebarVisible;
+    }
+}
+
+
